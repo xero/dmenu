@@ -41,6 +41,8 @@ dmenu \- dynamic menu
 .IR color ]
 .RB [ \-sf
 .IR color ]
+.RB [ \-c ]
+.IR color ]
 .RB [ \-v ]
 .P
 .BR dmenu_run " ..."
@@ -143,6 +145,9 @@ defines the selected background color.
 .TP
 .BI \-sf " color"
 defines the selected foreground color.
++.TP
++.B \-c
++enables filename completion for text after a space (useful with the dmenu_run script).
 .TP
 .B \-v
 prints version information to stdout, then exits.
@@ -151,7 +156,9 @@ dmenu is completely controlled by the keyboard.  Items are selected using the
 arrow keys, page up, page down, home, and end.
 .TP
 .B Tab
-Copy the selected item to the input field.
+Copy the selected item to the input field.  Also, if the -c option is given and there
+is a space in the input, will try to expand and complete text after the space into a
+valid filename. (First Tab - Longest Completion, Multiple Tabs - cycle through files)
 .TP
 .B Return
 Confirm selection.  Prints the selected item to stdout and exits, returning

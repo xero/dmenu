@@ -5,6 +5,7 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <wordexp.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
@@ -39,6 +40,7 @@ static void insert(const char *str, ssize_t n);
 static void keypress(XKeyEvent *ev);
 static void matchstr(void);
 static void matchtok(void);
+static void matchfile(char *filestart, Bool cycling);
 static void matchfuzzy(void);
 static char *strchri(const char *s, int c);
 static size_t nextrune(int inc);
@@ -60,7 +62,7 @@ static const char *normbgcolor = NULL;
 static const char *normfgcolor = NULL;
 static const char *selbgcolor  = NULL;
 static const char *selfgcolor  = NULL;
-static const char *dimcolor = NULL; 
+static const char *dimcolor = NULL;
 static char *name = "dmenu";
 static char *class = "Dmenu";
 static char *dimname = "dimenu";
@@ -77,6 +79,7 @@ static ColorSet *dimcol;
 static Atom clip, utf8;
 static Bool topbar = True;
 static Bool running = True;
+static Bool filecomplete = False;
 static Bool filter = False;
 static Bool maskin = False;
 static Bool noinput = False;
@@ -111,6 +114,8 @@ main(int argc, char *argv[]) {
 		}
 		else if(!strcmp(argv[i], "-b"))   /* appears at the bottom of the screen */
 			topbar = False;
+		else if(!strcmp(argv[i], "-c"))
+			filecomplete = True;
  		else if(!strcmp(argv[i], "-q"))
  			quiet = True;
 		else if(!strcmp(argv[i], "-f"))   /* grabs keyboard before reading stdin */
@@ -155,7 +160,7 @@ main(int argc, char *argv[]) {
 		else if (!strcmp(argv[i], "-o"))  /* opacity */
 			opacity = atof(argv[++i]);
 		else if (!strcmp(argv[i], "-dim"))  /* dim opacity */
-			dimopacity = atof(argv[++i]);	
+			dimopacity = atof(argv[++i]);
 		else if (!strcmp(argv[i], "-dc")) /* dim color */
 			dimcolor = argv[++i];
 		else if(!strcmp(argv[i], "-p"))   /* adds prompt to left of input field */
@@ -234,11 +239,11 @@ read_resourses(void) {
 	if( normbgcolor == NULL )
 		normbgcolor = "#222222";
 	if( normfgcolor == NULL )
-		normfgcolor = "#bbbbbb";
+		normfgcolor = "#c0c0c0";
 	if( selbgcolor == NULL )
-		selbgcolor  = "#005577";
+		selbgcolor  = "#5F8787";
 	if( selfgcolor == NULL )
-		selfgcolor  = "#eeeeee";
+		selfgcolor  = "#222222";
 	if( dimcolor == NULL )
 		dimcolor = "#000000";
 	if( !opacity )
@@ -335,7 +340,7 @@ drawmenu(void) {
 	if((curpos = textnw(dc, maskin ? maskinput : text, length) + dc->font.height/2) < dc->w)
 		drawrect(dc, curpos, (dc->h - dc->font.height)/2 + 1, 1, dc->font.height -1, True, normcol->FG);
 
-    if(!quiet || strlen(text) > 0) {    
+    if(!quiet || strlen(text) > 0) {
         if(lines > 0) {
             /* draw vertical list */
             dc->w = mw - dc->x;
@@ -405,6 +410,7 @@ insert(const char *str, ssize_t n) {
 
 void
 keypress(XKeyEvent *ev) {
+	static KeySym lastkey=0;
 	char buf[32];
 	int len;
 	KeySym ksym = NoSymbol;
@@ -444,6 +450,8 @@ keypress(XKeyEvent *ev) {
 			while(cursor > 0 && text[nextrune(-1)] != ' ' && text[nextrune(-1)] != '/')
 				insert(NULL, nextrune(-1) - cursor);
 			break;
+		case XK_V: /* fallthrough */
+		case XK_v: /* fallthrough */
 		case XK_y: /* fallthrough */
 		case XK_Y: /* paste selection */
 			XConvertSelection(dc->dpy, (ev->state & ShiftMask) ? clip : XA_PRIMARY,
@@ -560,6 +568,10 @@ keypress(XKeyEvent *ev) {
 		}
 		break;
 	case XK_Tab:
+		if(filecomplete && strchr(text, ' ') != NULL) {
+			matchfile(strchr(text, ' ')+1, lastkey==XK_Tab);
+			break;
+		}
 		if(!sel)
 			return;
 		if(strcmp(text, sel->text)) {
@@ -580,6 +592,10 @@ keypress(XKeyEvent *ev) {
 		}
 		break;
 	case XK_ISO_Left_Tab:
+		if(filecomplete && strchr(text, ' ') != NULL) {
+			matchfile(strchr(text, ' ')+1, lastkey==XK_Tab);
+			break;
+		}
 		if(!sel)
 			return;
 		if(strcmp(text, sel->text)) {
@@ -598,9 +614,10 @@ keypress(XKeyEvent *ev) {
 				cursor = strlen(text);
 				match();
 			}
-		} 
+		}
 		break;
 	}
+	lastkey=ksym;
 	drawmenu();
 }
 
@@ -686,7 +703,7 @@ void
 buttonpress(XEvent *e) {
 	int curpos;
 	Item *item;
-	XButtonPressedEvent *ev = &e->xbutton;	
+	XButtonPressedEvent *ev = &e->xbutton;
 
 	if(ev->window != win)
 		exit(EXIT_FAILURE);
@@ -867,12 +884,50 @@ matchtok(void) {
 }
 
 void
+matchfile(char *filestart, Bool cycling ) {
+	static int try=0, p=0;
+	wordexp_t exp;
+	int i, j, k;
+
+	if( !cycling ) {
+		p = strlen(filestart);
+		try=0;
+	}
+	filestart[ p+1 ] = 0;
+	filestart[ p ] = '*';
+
+	wordexp(filestart, &exp, 0);
+	if( exp.we_wordc > 0 ) {
+		for(j=0,i=0; exp.we_wordv[try][i]!=0; i++,j++) {
+			if( exp.we_wordv[try][i]==' ' ) filestart[j++]='\\';
+			filestart[j]=exp.we_wordv[try][i];
+		}
+		filestart[j]=0;
+
+		if( cycling )
+			try = (try+1)%exp.we_wordc;
+		else
+			for(k=1; k<exp.we_wordc; k++)
+				for(j=0, i=0; exp.we_wordv[k][i]; i++,j++) {
+					if( filestart[j]=='\\' ) j++;
+					if( filestart[j]!=exp.we_wordv[k][i] ) {
+						filestart[j]=0;
+						break;
+					}
+				}
+	} else {
+		filestart[ p ] = 0;
+	}
+	wordfree(&exp);
+}
+
+void
 matchfuzzy(void) {
 	int i;
 	size_t len;
 	Item *item;
 	char *pos;
-	
+
 	len = strlen(text);
 	matches = matchend = NULL;
 	for(item = items; item && item->text; item++) {
@@ -1015,7 +1070,7 @@ setup(void) {
 			x = info[snum].x_org;
 			y = info[snum].y_org + (topbar ? yoffset : info[i].height - mh - yoffset);
 			mw = info[snum].width;
-			
+
 			dimx = info[snum].x_org;
 			dimy = info[snum].y_org;
 			dimw = info[snum].width;
@@ -1060,10 +1115,10 @@ setup(void) {
 		x = 0;
 		y = topbar ? 0 : DisplayHeight(dc->dpy, screen) - mh - yoffset;
 		mw = DisplayWidth(dc->dpy, screen);
-		
+
 		dimx = 0;
 		dimy = 0;
-		dimw = WidthOfScreen(defScreen); 
+		dimw = WidthOfScreen(defScreen);
 		dimh = HeightOfScreen(defScreen);
 	}
 
@@ -1072,9 +1127,9 @@ setup(void) {
 	promptw = (prompt && *prompt) ? textw(dc, prompt) : 0;
 	inputw = MIN(inputw, mw/3);
 	match();
-	
+
 	swa.override_redirect = True;
-	
+
 	/* create dim window */
 	if(dimopacity > 0) {
 		swa.background_pixel = dimcol->BG;
@@ -1085,16 +1140,16 @@ setup(void) {
 	                    CWOverrideRedirect | CWBackPixel | CWEventMask, &swa);
 		XClassHint dimhint = { .res_name = dimname, .res_class = class };
   	XSetClassHint(dc->dpy, dim, &dimhint);
-  
+
 		dimopacity = MIN(MAX(dimopacity, 0), 1);
   	unsigned int dimopacity_set = (unsigned int)(dimopacity * OPAQUE);
   	XChangeProperty(dc->dpy, dim, XInternAtom(dc->dpy, OPACITY, False),
 											XA_CARDINAL, 32, PropModeReplace,
 											(unsigned char *) &dimopacity_set, 1L);
-	
+
 		XMapRaised(dc->dpy, dim);
 	}
-	
+
 	/* create menu window */
 	swa.background_pixel = normcol->BG;
 	swa.event_mask = ExposureMask | KeyPressMask | VisibilityChangeMask | ButtonPressMask | PointerMotionMask;
@@ -1110,7 +1165,7 @@ setup(void) {
   XChangeProperty(dc->dpy, win, XInternAtom(dc->dpy, OPACITY, False),
 											XA_CARDINAL, 32, PropModeReplace,
 											(unsigned char *) &opacity_set, 1L);
-	
+
 	/* open input methods */
 	xim = XOpenIM(dc->dpy, NULL, NULL, NULL);
 	xic = XCreateIC(xim, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
@@ -1127,6 +1182,6 @@ usage(void) {
 				"             [-s screen] [-name name] [-class class] [ -o opacity]\n"
 				"             [-dim opcity] [-dc color] [-l lines] [-p prompt] [-fn font]\n"
 	      "             [-x xoffset] [-y yoffset] [-h height] [-w width]\n"
-	      "             [-nb color] [-nf color] [-sb color] [-sf color] [-v]\n", stderr);
+	      "             [-nb color] [-nf color] [-sb color] [-sf color] [-c] [-v]\n", stderr);
 	exit(EXIT_FAILURE);
 }
